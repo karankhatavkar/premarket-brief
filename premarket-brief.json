@@ -1,0 +1,248 @@
+{
+  "name": "premarket-brief",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 3
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        32,
+        0
+      ],
+      "id": "6c6839bc-edaa-493c-a0ad-6745a3955e95",
+      "name": "Schedule Trigger",
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "url": "https://www.googleapis.com/youtube/v3/playlistItems",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "part",
+              "value": "snippet"
+            },
+            {
+              "name": "playlistId",
+              "value": "UUhneGqGy_lmvfcR1v_avL6g"
+            },
+            {
+              "name": "maxResults",
+              "value": "20"
+            },
+            {
+              "name": "key",
+              "value": "YOUR_YOUTUBE_API_KEY"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        256,
+        0
+      ],
+      "id": "41e03fec-eebb-494f-bd2d-e1cf501a8a53",
+      "name": "Fetch Channel Videos"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Current time in milliseconds\nconst now = new Date();\n\n// 24 hours ago\nconst cutoff = new Date(now.getTime() - 24 * 60 * 60 * 1000);\n\n// Access the video list from the previous node\nconst items = $input.first().json.items || [];\n\nconst filtered = items.filter(item => {\n  const publishedAt = item.snippet?.publishedAt || '';\n  if (!publishedAt) return false;\n  \n  const pubDate = new Date(publishedAt);\n  \n  // Keep video if it was published within the last 24 hours\n  return pubDate >= cutoff && pubDate <= now;\n});\n\n// Return each video as a separate item for the next node\nreturn filtered.map(item => ({\n  json: {\n    videoId: item.snippet.resourceId.videoId,\n    title: item.snippet.title,\n    publishedAt: item.snippet.publishedAt,\n    url: `https://www.youtube.com/watch?v=${item.snippet.resourceId.videoId}`\n  }\n}));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        0
+      ],
+      "id": "f786e4a1-0852-4fb3-905c-c0669c03ee2c",
+      "name": "Filter Today's Videos"
+    },
+    {
+      "parameters": {
+        "videoUrl": "={{ $json.url }}",
+        "additionalOptions": {
+          "formatOutput": "raw"
+        }
+      },
+      "type": "@cryptodevops/n8n-nodes-youtube-transcript.youTubeTranscript",
+      "typeVersion": 1,
+      "position": [
+        704,
+        0
+      ],
+      "id": "9bfae120-ca15-4659-9385-38e98e32053a",
+      "name": "YouTube Transcript"
+    },
+    {
+      "parameters": {
+        "jsCode": "// \"Merge Transcripts\" — runs once\nconst transcripts = $input.all();                  // [{ text }, ...] in order\nconst videos = $(\"Filter Today's Videos\").all();   // [{ title, url, ... }, ...]\n\nconst docs = [];\nlet merged = '';\n\nfor (let i = 0; i < transcripts.length; i++) {\n  const text = (transcripts[i].json.text || '').trim();\n  const title = videos[i]?.json.title || `Video ${i + 1}`;\n  const url = videos[i]?.json.url || '';\n  if (!text) continue;\n  docs.push({ title, url, transcript: text });\n  merged += \"\\n\\n\" + \"TITLE OF VIDEO: \" + title + \"\\ntranscript: \" + text\n}\n\nreturn [{\n  json: {\n    transcript_merge: merged,\n    videos: docs,                 // structured array, if you prefer JSON downstream\n    videoCount: docs.length,\n    generatedAt: new Date().toISOString(),\n  },\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        928,
+        0
+      ],
+      "id": "45ffd210-dbb8-49a8-9c22-eafb9439ccc7",
+      "name": "Refactor"
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "models/gemini-2.5-flash",
+          "mode": "list",
+          "cachedResultName": "models/gemini-2.5-flash"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "=You are an experienced Indian equities analyst writing a short pre-market brief for a retail investor. Your ONLY source is the auto-transcribed text of Hindi-language YouTube videos from a SINGLE retail stock-market channel, posted in the last 24 hours. Treat this as one commentator's narrative, NOT as verified market data.\n\nToday's date is {{TODAY}}. Use it to convert every relative time reference in the transcripts (\"today / tonight / tomorrow / yesterday / Friday / this week\") into an absolute date. Note: the channel often posts multiple videos a day (e.g. a morning \"week ahead\" and a late-night wrap). A recording timestamp spoken inside a video (like \"it's 9:40 right now\") is the host's recording time — NOT a deadline or a rule. Never turn it into one.\n\nEXTRACTION RULES — follow all:\n\n1. SOURCE DISCIPLINE. Write only what the channel actually said. Do not add outside facts, prices, tickers, or events not present in the transcripts. If a sentence is cut off mid-thought, DROP it — never complete, guess, or infer the missing part.\n\n2. LEAD WITH FACTS. Prioritise what actually HAPPENED (real index/stock moves, %s, released data) over what might happen. The brief MUST include the headline factual numbers the channel gave — Nifty/market moves, growth figures, key levels, market caps. Never drop a headline number for being \"obvious\".\n\n3. SEPARATE THREE REGISTERS — never blur them:\n   - FACT / EVENT: already happened (a move that occurred, a stock that reacted, data already out). State plainly.\n   - SCHEDULED: a known dated event (central-bank meetings, AGMs, listings, results). State with its absolute date.\n   - EXPECTATION / SPECULATION: may or may not happen (a deal \"signing today\", a draft-paper filing, an IPO announcement, an undecided rate move). ALWAYS hedge using the channel's own framing (\"the channel expects…\", \"unconfirmed…\", \"speculation that…\"). Never present speculation as fact.\n\n4. RECENCY WINS. When videos conflict, the MOST RECENT video is the current stance (a late-night video is newer than the same day's morning video). If the tone shifted materially between videos, note it in one short clause. Do NOT average conflicting views into vague \"uncertainty\".\n\n5. PRESERVE SPECIFICS, NEVER INFER. Keep the specific numbers, %s, dates, levels, market caps, and shareholdings the channel states. If a number looks internally inconsistent, garbled, or you are not confident it was transcribed correctly, OMIT it — do not guess or round to a plausible value.\n\n6. ENTITY SAFETY (strict). Transcripts are machine-transcribed and frequently garble company names. Resolve a name to a full company name ONLY when confident (e.g. मुथूट → Muthoot Finance; एनएलसी → NLC India; the \"mobile manufacturer whose sales fell\" → Dixon Technologies). If a transcribed name does NOT map cleanly to a known listed Indian company, OR maps to one that contradicts its described business (e.g. a described phone-maker resolving to a DTH/broadcast company), output your best-guess full name + \"(unverified)\" and attach NO ticker. NEVER output a ticker symbol unless you are certain it maps to that exact company. Always prefer flagging over being confidently wrong. Do not invent tickers.\n\n7. CHANNEL SENTIMENT. Tag each stock and each theme with the CHANNEL'S stance using ONLY this fixed set: [Bullish] [Bearish] [Cautious] [Neutral] [Hype - unverified]. These describe the channel's view, not yours. Preserve the host's hedge-language where present (\"keep on radar\", \"study purpose only\", \"rough calculation\"). These hedges are signal — keep them.\n\n8. NO ADVICE. Issue no buy/sell/hold call of your own. Report the channel's framing as-is. Only genuine NAMED third-party / institutional calls (e.g. a brokerage price target, \"JP Morgan\", \"Citi\") go under \"Analyst Calls & Price Targets\" — the channel's personal opinions do NOT. If there are no third-party calls, write \"No third-party analyst calls cited.\"\n\n9. UNVERIFIABLE CLAIMS. If the channel asserts a hard real-world fact you cannot treat as common knowledge (e.g. who holds an official position, that a company has IPO'd, that someone is now a \"trillionaire\"), report it as the channel's claim and tag it [unverified - channel claim]. Never state it as established fact.\n\n10. STRIP NOISE. Remove all channel self-promotion (subscribe, other-channel plugs, \"link in description / i-button\"), filler, and repetition. Keep only investible signal.\n\n11. LANGUAGE. Plain, clear, skimmable English. Short sentences. On first use of a piece of jargon, add a 3-5 word plain-language gloss in parentheses but keep the term — e.g. \"ECL framework (new RBI bad-loan rules)\", \"GIFT Nifty (early pre-open market indicator)\". Do not dumb down precision: a rate hike stays a rate hike.\n\n12. SECTIONS. The structure below is fixed, but OMIT any section that has no real content (or reduce it to one neutral line) rather than padding it. The Calendar lists dated events only, as one-liners — do not also repeat those same events as analysis under Macro. Include the optional \"Deep Dive\" section ONLY when one of the videos is a single-topic explainer (e.g. a whole video on one sector or stock); otherwise omit it entirely.\n\nOUTPUT FORMAT:\n- Output valid HTML ONLY. No markdown. No explanations. No text before or after the HTML.\n- Do NOT wrap the output in ```html or ``` fences. Your output must START with the \"<\" of the first <div> and END with the final </div>.\n- Use the EXACT structure below and keep every inline style verbatim.\n\n<div style=\"font-family: Arial, Helvetica, sans-serif; max-width: 600px; margin: 0 auto; color: #1a1a1a; line-height: 1.6;\">\n\n  <h1 style=\"font-size: 22px; color: #0d3b66; border-bottom: 3px solid #0d3b66; padding-bottom: 8px; margin-bottom: 16px;\">\n    Daily Market Brief — {{$now.toFormat('dd MMM yyyy')}}\n  </h1>\n\n  <p style=\"margin: 0 0 20px 0; background-color: #eef3f8; border-left: 4px solid #0d3b66; padding: 10px 14px; font-size: 14px;\">\n    <strong>TL;DR:</strong> [1-2 lines: the single biggest driver today + the channel's current (most-recent) market lean]\n  </p>\n\n  <h2 style=\"font-size: 17px; color: #0d3b66; margin-top: 24px; margin-bottom: 8px;\">Key Market Themes</h2>\n  <ul style=\"margin: 0; padding-left: 20px;\">\n    <li style=\"margin-bottom: 6px;\">[theme] <span style=\"font-size: 12px; color: #555; font-weight: bold;\">[Bullish/Bearish/Cautious/Neutral]</span></li>\n  </ul>\n\n  <h2 style=\"font-size: 17px; color: #0d3b66; margin-top: 24px; margin-bottom: 8px;\">Today's Calendar &amp; Triggers</h2>\n  <ul style=\"margin: 0; padding-left: 20px;\">\n    <li style=\"margin-bottom: 6px;\"><strong>[Absolute date]</strong> — [scheduled event, one line]</li>\n  </ul>\n\n  <h2 style=\"font-size: 17px; color: #0d3b66; margin-top: 24px; margin-bottom: 8px;\">Stocks &amp; Sectors in Focus</h2>\n  <ul style=\"margin: 0; padding-left: 20px;\">\n    <li style=\"margin-bottom: 6px;\"><strong>[Company name]</strong> <span style=\"font-size: 12px; color: #555; font-weight: bold;\">[tag]</span> — [one line; fact vs expectation made clear]</li>\n  </ul>\n\n  <h2 style=\"font-size: 17px; color: #0d3b66; margin-top: 24px; margin-bottom: 8px;\">Deep Dive: [topic]</h2>\n  <p style=\"margin: 0 0 8px 0;\">[2-3 line plain-language summary of the single-topic video — include the headline number]</p>\n  <ul style=\"margin: 0; padding-left: 20px;\">\n    <li style=\"margin-bottom: 6px;\"><strong>[Company]</strong> <span style=\"font-size: 12px; color: #555; font-weight: bold;\">[tag]</span> — [up to ~4 concrete data points: m-cap, holdings, growth, pledge, etc.]</li>\n  </ul>\n\n  <h2 style=\"font-size: 17px; color: #0d3b66; margin-top: 24px; margin-bottom: 8px;\">Analyst Calls &amp; Price Targets</h2>\n  <ul style=\"margin: 0; padding-left: 20px;\">\n    <li style=\"margin-bottom: 6px;\"><strong>[Named institution]</strong> — [call / target]</li>\n  </ul>\n\n  <h2 style=\"font-size: 17px; color: #0d3b66; margin-top: 24px; margin-bottom: 8px;\">Macro &amp; Global Cues</h2>\n  <ul style=\"margin: 0; padding-left: 20px;\">\n    <li style=\"margin-bottom: 6px;\">[central banks, global cues, policy/trade news not already listed in Calendar]</li>\n  </ul>\n\n  <h2 style=\"font-size: 17px; color: #b3261e; margin-top: 24px; margin-bottom: 8px;\">Risks &amp; Caveats</h2>\n  <ul style=\"margin: 0; padding-left: 20px;\">\n    <li style=\"margin-bottom: 6px;\">[downside risks + any fake-news / unconfirmed flags the channel raised]</li>\n  </ul>\n\n  <h2 style=\"font-size: 17px; color: #0d3b66; margin-top: 24px; margin-bottom: 8px;\">Bottom Line</h2>\n  <p style=\"margin: 0; background-color: #f0f4f8; padding: 12px 16px; border-radius: 6px;\">\n    [tight 3-sentence executive summary of today's setup]\n  </p>\n\n  <p style=\"margin-top: 28px; font-size: 12px; color: #888888; border-top: 1px solid #e0e0e0; padding-top: 10px;\">\n    Source: Stock Market का Commando (single YouTube channel) — auto-generated summary of the channel's own views and claims. Informational only; not investment advice. Verify before acting.\n  </p>\n\n</div>",
+              "role": "model"
+            },
+            {
+              "content": "=Today's date: {{ $now.toFormat('dd MMM yyyy, EEEE') }}\n\nTranscripts from the last 24 hours (single channel):\n{{ $json.transcript_merge }}"
+            }
+          ]
+        },
+        "simplify": false,
+        "options": {
+          "temperature": 0.3
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.googleGemini",
+      "typeVersion": 1,
+      "position": [
+        1152,
+        0
+      ],
+      "id": "08d32053-eca6-4a6e-8f7d-d7bc2978b6d7",
+      "name": "Message a model",
+      "retryOnFail": true,
+      "waitBetweenTries": 5000,
+      "credentials": {
+        "googlePalmApi": {
+          "id": "wnclH5qKu7qdY6ra",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "your@email.com",
+        "subject": "=Stock Market Summary - {{ $now.format('yyyy-MM-dd') }}",
+        "message": "=<div style=\"margin: 0 0 20px 0; padding: 12px 14px; font-size: 10px; color: #5c4040; line-height: 1.5;\">\n    <strong style=\"color: #b3261e;\">Disclaimer — Please Read</strong><br>\n    This email is an <strong>AI-generated summary</strong> of publicly available YouTube videos from a single third-party channel. It is created by an automated tool and is <strong>not reviewed for accuracy</strong>; it may contain errors, omissions, misheard names, or wrong figures. It is shared for <strong>informational and educational purposes only</strong> and is <strong>NOT investment advice</strong>, nor a recommendation, offer, or solicitation to buy or sell any security. The views summarised are those of the original video creator, not mine, and no view here should be relied upon for any financial decision. I am <strong>NOT a SEBI-registered Research Analyst, Investment Adviser, or financial professional of any kind</strong>, and nothing in this email should be treated as a research report or professional advice. Securities markets carry risk, including loss of capital; past performance does not indicate future results. Always do your own research and consult a SEBI-registered adviser before investing. I accept <strong>no responsibility or liability</strong> for any errors in this summary or for any loss arising from its use. By reading this, you accept full responsibility for your own decisions.\n</div>\n{{ $json.candidates[0].content.parts[0].text }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1504,
+        0
+      ],
+      "id": "7c02ee78-431c-47fd-a9d0-cd5e0b30803c",
+      "name": "Send a message",
+      "webhookId": "36470d50-d98a-43ee-99b3-22368d723944",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "21LrLySLgmJKjigt",
+          "name": "Gmail account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Fetch Channel Videos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Channel Videos": {
+      "main": [
+        [
+          {
+            "node": "Filter Today's Videos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Today's Videos": {
+      "main": [
+        [
+          {
+            "node": "YouTube Transcript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "YouTube Transcript": {
+      "main": [
+        [
+          {
+            "node": "Refactor",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Refactor": {
+      "main": [
+        [
+          {
+            "node": "Message a model",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Message a model": {
+      "main": [
+        [
+          {
+            "node": "Send a message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "83b281d5-77f8-4ddf-aea7-e94a448f56cd",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "1c2d246185cebf3e49509eaa5b8778ae01fca58c97f3f1ed074459c428f7f8b9"
+  },
+  "id": "86XF9sRZ1HqTi2n7",
+  "tags": []
+}
